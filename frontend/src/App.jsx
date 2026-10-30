@@ -1,29 +1,53 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Header } from "./components/Header";
+import { Footer } from "./components/Footer";
 import { ForecastView } from "./components/ForecastView";
 import { AccuracyView } from "./components/AccuracyView";
+import { DATA_MONTH } from "./lib/time";
 
-function App() {
-  const [activeTab, setActiveTab] = useState("forecast");
+const TAB_IDS = ["forecast", "accuracy"];
+const fromHash = () => (TAB_IDS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "forecast");
+
+export default function App() {
+  const [tab, setTab] = useState(fromHash);
+  const [cutoff, setCutoff] = useState(13);
+  const [month, setMonth] = useState(DATA_MONTH);
+  const [theme, setTheme] = useState(() => localStorage.getItem("windscope-theme") || "dark");
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("windscope-theme", theme);
+  }, [theme]);
+
+  useEffect(() => {
+    const onHash = () => setTab(fromHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  const change = (id) => {
+    location.hash = id;
+    setTab(id);
+  };
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: "#050c1a",
-        backgroundImage:
-          "radial-gradient(ellipse at 20% 50%, rgba(20,184,166,0.06) 0%, transparent 60%), radial-gradient(ellipse at 80% 20%, rgba(14,165,233,0.06) 0%, transparent 60%)",
-        fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif",
-        color: "#e2e8f0",
-      }}
-    >
-      <Header activeTab={activeTab} onTabChange={setActiveTab} />
-      <main>
-        {activeTab === "forecast" && <ForecastView />}
-        {activeTab === "accuracy" && <AccuracyView />}
+    <>
+      <a className="skip-link" href="#main">Skip to content</a>
+      <Header
+        activeTab={tab}
+        onTabChange={change}
+        month={month}
+        theme={theme}
+        onThemeChange={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+      />
+      <main id="main" role="tabpanel" aria-labelledby={`tab-${tab}`}>
+        {tab === "forecast" ? (
+          <ForecastView cutoff={cutoff} onCutoffChange={setCutoff} month={month} onMonthChange={setMonth} />
+        ) : (
+          <AccuracyView cutoff={cutoff} onCutoffChange={setCutoff} month={month} onMonthChange={setMonth} />
+        )}
       </main>
-    </div>
+      <Footer />
+    </>
   );
 }
-
-export default App;

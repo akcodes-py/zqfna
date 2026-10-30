@@ -208,3 +208,50 @@ class TestEdgeCases:
         assert not df.empty
         from datetime import date
         assert df.iloc[0]["delivery_date"] == date(2026, 1, 5)
+
+
+class TestCutoffOffset:
+    """Offset 13h moves the cutoff to 11:00 UTC on D-1 (day-ahead gate closure)."""
+
+    def _inputs(self):
+        start = datetime(2026, 1, 10, 6, 0, tzinfo=timezone.utc)
+        actuals = [{"start_time": start, "generation": 5000.0}]
+        forecasts = [
+            {"start_time": start, "publish_time": datetime(2026, 1, 9, 10, 0, tzinfo=timezone.utc), "generation": 6000.0},
+            {"start_time": start, "publish_time": datetime(2026, 1, 9, 18, 0, tzinfo=timezone.utc), "generation": 5200.0},
+        ]
+        return actuals, forecasts
+
+    def test_midnight_cutoff_uses_latest_vintage(self):
+        df = build_matched_dataset(*self._inputs(), cutoff_offset_hours=0)
+        assert df["forecast_mw"].iloc[0] == 5200.0
+
+    def test_gate_closure_cutoff_excludes_evening_vintage(self):
+        df = build_matched_dataset(*self._inputs(), cutoff_offset_hours=13)
+        assert df["forecast_mw"].iloc[0] == 6000.0
+
+    def test_default_matches_original_behaviour(self):
+        a, f = self._inputs()
+        assert build_matched_dataset(a, f).equals(build_matched_dataset(a, f, cutoff_offset_hours=0))
+
+
+class TestCacheStampede:
+    def test_concurrent_cold_requests_share_one_fetch(self):
+        import asyncio
+        import main
+
+        main.cache._store.clear()
+        main._locks.clear()
+        calls = {"n": 0}
+
+        async def fetch():
+            calls["n"] += 1
+            await asyncio.sleep(0.05)
+            return [1, 2, 3]
+
+        async def run():
+            return await asyncio.gather(*[main._cached("k", fetch) for _ in range(5)])
+
+        results = asyncio.run(run())
+        assert calls["n"] == 1
+        assert all(r == [1, 2, 3] for r in results)

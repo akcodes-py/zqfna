@@ -1,24 +1,43 @@
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const BASE = (import.meta.env.VITE_API_URL || "http://localhost:8000").replace(/\/+$/, "");
+const REQUEST_TIMEOUT_MS = 90_000;
 
-async function request(path, options = {}) {
-  const res = await fetch(`${API_BASE}${path}`, options);
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`API error ${res.status}: ${text}`);
+async function get(path, params) {
+  const query = params ? `?${new URLSearchParams(params)}` : "";
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(`${BASE}${path}${query}`, { signal: controller.signal });
+    if (!res.ok) {
+      let detail = "";
+      try {
+        const body = await res.json();
+        detail = body.detail || "";
+      } catch {
+        // Keep the status message when the server does not return JSON.
+      }
+      throw new Error(detail || `Request failed (${res.status})`);
+    }
+    return await res.json();
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error("The data server took too long to respond. Please retry.");
+    }
+    if (error instanceof TypeError) {
+      throw new Error("Could not reach the data server. Check your connection and retry.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
-  return res.json();
 }
 
+const p = (offset, extra = {}) => ({ cutoff_offset_hours: String(offset), ...extra });
+
 export const api = {
-  getActuals: () => request("/api/actuals"),
-  getForecasts: (deliveryDate) =>
-    request(deliveryDate ? `/api/forecasts?delivery_date=${deliveryDate}` : "/api/forecasts"),
-  getMatched: (deliveryDate) =>
-    request(deliveryDate ? `/api/matched?delivery_date=${deliveryDate}` : "/api/matched"),
-  getAccuracy: () => request("/api/accuracy"),
-  getDailyAccuracy: () => request("/api/accuracy/daily"),
-  getHourlyAccuracy: () => request("/api/accuracy/hourly"),
-  getForecastVintages: (deliveryDate) =>
-    request(`/api/forecast-vintages?delivery_date=${deliveryDate}`),
-  health: () => request("/health"),
+  getMatched: (offset, date) => get("/api/matched", p(offset, date ? { delivery_date: date } : {})),
+  getAccuracy: (offset) => get("/api/accuracy", p(offset)),
+  getDailyAccuracy: (offset) => get("/api/accuracy/daily", p(offset)),
+  getHourlyAccuracy: (offset) => get("/api/accuracy/hourly", p(offset)),
+  getForecastVintages: (offset, date) => get("/api/forecast-vintages", p(offset, { delivery_date: date })),
 };

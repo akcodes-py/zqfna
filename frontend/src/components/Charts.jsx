@@ -1,308 +1,340 @@
-import React, { useState, useMemo } from "react";
 import {
-  ComposedChart, Line, Bar, Area, XAxis, YAxis, CartesianGrid,
-  Tooltip, Legend, ResponsiveContainer, ReferenceLine, Scatter, Cell,
+  Bar,
+  CartesianGrid,
+  Cell,
+  ComposedChart,
+  Legend,
+  Line,
+  ReferenceLine,
+  ResponsiveContainer,
+  Scatter,
+  ScatterChart,
+  Tooltip,
+  XAxis,
+  YAxis,
+  ZAxis,
 } from "recharts";
-import { format, parseISO } from "date-fns";
-import { LoadingSkeleton } from "./UI";
+import { formatClock, formatDayTick } from "../lib/time";
+import { EmptyState, LoadingSkeleton } from "./UI";
 
-const COLORS = {
-  actual: "#14b8a6",
-  forecast: "#f59e0b",
-  error: "#f43f5e",
-  bias: "#8b5cf6",
+// Professional palette: cyan actuals, emerald forecasts, amber shortage risk,
+// blue excess-cost risk, and indigo signed bias.
+const C = {
+  actual: "var(--chart-actual)",
+  forecast: "var(--chart-forecast)",
+  over: "var(--chart-over)",
+  under: "var(--chart-under)",
+  bias: "var(--chart-bias)",
 };
 
-// ── Shared custom tooltip ───────────────────────────────────────────────────────
+const MARGIN = { top: 8, right: 16, left: 4, bottom: 4 };
+const grid = { stroke: "var(--chart-grid)", vertical: false };
+const axisBase = { tick: { fill: "var(--chart-axis)", fontSize: 11 }, tickLine: false, axisLine: { stroke: "var(--chart-grid)" } };
+const zeroLine = <ReferenceLine y={0} stroke="var(--chart-grid)" />;
 
-function CustomTooltip({ active, payload, label, formatter }) {
-  if (!active || !payload?.length) return null;
+const num = (v) => Number(v).toLocaleString("en-GB", { maximumFractionDigits: 0 });
+const signed = (v) => `${v > 0 ? "+" : ""}${num(v)}`;
+
+const mwAxis = (extra = {}) => ({
+  ...axisBase,
+  width: 56,
+  tickFormatter: num,
+  label: { value: "MW", position: "insideTopLeft", offset: -4, fill: "var(--chart-axis)", fontSize: 11, dy: -8, dx: 12 },
+  ...extra,
+});
+
+const legendProps = {
+  verticalAlign: "top",
+  align: "right",
+  height: 28,
+  iconType: "plainline",
+  wrapperStyle: { fontSize: 12 },
+  formatter: (value) => <span style={{ color: "var(--chart-legend)" }}>{value}</span>,
+};
+
+const tipBox = {
+  background: "var(--surface)",
+  border: "1px solid var(--border-strong)",
+  borderRadius: 8,
+  padding: "8px 12px",
+  fontSize: 12,
+  boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+  minWidth: 150,
+};
+
+function TipShell({ title, rows }) {
   return (
-    <div
-      style={{
-        background: "rgba(15,23,42,0.95)",
-        border: "1px solid rgba(71,85,105,0.6)",
-        borderRadius: 10,
-        padding: "10px 14px",
-        fontSize: 12,
-        backdropFilter: "blur(8px)",
-      }}
-    >
-      <p style={{ margin: "0 0 6px", color: "#94a3b8", fontWeight: 600 }}>{label}</p>
-      {payload.map((p) => (
-        <div key={p.dataKey} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 3 }}>
-          <span style={{ width: 10, height: 10, borderRadius: "50%", background: p.color, flexShrink: 0 }} />
-          <span style={{ color: "#cbd5e1" }}>{p.name}:</span>
-          <span style={{ color: "#f1f5f9", fontWeight: 600 }}>
-            {formatter ? formatter(p.value) : p.value?.toFixed(0)} MW
-          </span>
+    <div style={tipBox}>
+      {title && <div style={{ color: "var(--text)", fontWeight: 600, marginBottom: 6 }}>{title}</div>}
+      {rows.map((r) => (
+        <div key={r.name} style={{ display: "flex", justifyContent: "space-between", gap: 16, color: r.color, marginTop: 2 }}>
+          <span>{r.name}</span>
+          <strong style={{ fontVariantNumeric: "tabular-nums" }}>{r.value}</strong>
         </div>
       ))}
     </div>
   );
 }
 
-// ── 1. Forecast vs Actual time-series chart ─────────────────────────────────────
+// Generic tooltip for line/bar series; `fmt` formats each value.
+function SeriesTip({ active, payload, label, fmt = (v) => `${num(v)} MW`, titleFmt = (l) => l }) {
+  if (!active || !payload?.length) return null;
+  return (
+    <TipShell
+      title={titleFmt(label)}
+      rows={payload.map((p) => ({ name: p.name, color: p.color ?? p.fill, value: fmt(p.value, p) }))}
+    />
+  );
+}
 
-export function ForecastChart({ data, loading }) {
-  if (loading) return <LoadingSkeleton height={320} label="Loading forecast chart..." />;
-  if (!data?.length) return (
-    <div style={{ height: 320, display: "flex", alignItems: "center", justifyContent: "center", color: "#475569" }}>
-      No data for selected date
+function ChartFrame({ label, children }) {
+  return (
+    <div className="chart-frame" role="img" aria-label={label}>
+      {children}
     </div>
   );
+}
 
-  const chartData = data.map((d) => ({
-    time: format(parseISO(d.start_time), "HH:mm"),
+const Loading = ({ h, text }) => <LoadingSkeleton height={h} label={text} />;
+const Empty = ({ h, text = "No data available" }) => <EmptyState height={h}>{text}</EmptyState>;
+
+/* -------------------------------------------------------------------------- */
+/* 1. Forecast vs actual over one day: line chart, no smoothing, 0-based axis. */
+/* -------------------------------------------------------------------------- */
+export function ForecastChart({ data, loading }) {
+  if (loading) return <Loading h={340} text="Loading forecast chart…" />;
+  if (!data?.length) return <Empty h={340} text="No data for selected date" />;
+
+  const rows = data.map((d) => ({
+    time: formatClock(d.start_time),
     actual: d.actual_mw,
     forecast: d.forecast_mw,
-    error: d.error_mw,
   }));
 
   return (
-    <ResponsiveContainer width="100%" height={320}>
-      <ComposedChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-        <defs>
-          <linearGradient id="actualGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="5%" stopColor={COLORS.actual} stopOpacity={0.25} />
-            <stop offset="95%" stopColor={COLORS.actual} stopOpacity={0} />
-          </linearGradient>
-        </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke="rgba(71,85,105,0.3)" />
-        <XAxis dataKey="time" tick={{ fill: "#64748b", fontSize: 11 }} tickLine={false} interval={5} />
-        <YAxis tick={{ fill: "#64748b", fontSize: 11 }} tickLine={false} unit=" MW" width={70} />
-        <Tooltip content={<CustomTooltip />} />
-        <Legend
-          wrapperStyle={{ fontSize: 12, paddingTop: 12 }}
-          formatter={(value) => <span style={{ color: "#94a3b8" }}>{value}</span>}
-        />
-        <Area
-          type="monotone"
-          dataKey="actual"
-          name="Actual Generation"
-          stroke={COLORS.actual}
-          strokeWidth={2}
-          fill="url(#actualGrad)"
-          dot={false}
-          activeDot={{ r: 4 }}
-        />
-        <Line
-          type="monotone"
-          dataKey="forecast"
-          name="Forecast (D-1)"
-          stroke={COLORS.forecast}
-          strokeWidth={2}
-          strokeDasharray="6 3"
-          dot={false}
-          activeDot={{ r: 4 }}
-        />
-      </ComposedChart>
-    </ResponsiveContainer>
+    <ChartFrame label="Line chart of actual and forecast wind generation in megawatts over the delivery day">
+      <ResponsiveContainer width="100%" height={340}>
+        <ComposedChart data={rows} margin={MARGIN}>
+          <CartesianGrid {...grid} />
+          <XAxis dataKey="time" {...axisBase} interval={5} />
+          <YAxis {...mwAxis()} domain={[0, (max) => Math.ceil(max / 2000) * 2000]} />
+          <Tooltip content={<SeriesTip />} cursor={{ stroke: "rgba(148,163,184,0.35)" }} />
+          <Legend {...legendProps} />
+          <Line
+            type="linear"
+            dataKey="actual"
+            name="Actual"
+            stroke={C.actual}
+            strokeWidth={2.25}
+            dot={false}
+            activeDot={{ r: 4 }}
+            isAnimationActive={false}
+          />
+          <Line
+            type="linear"
+            dataKey="forecast"
+            name="Forecast"
+            stroke={C.forecast}
+            strokeWidth={2}
+            strokeDasharray="6 4"
+            dot={false}
+            activeDot={{ r: 4 }}
+            isAnimationActive={false}
+          />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </ChartFrame>
   );
 }
 
-// ── 2. Daily MAE bar chart ──────────────────────────────────────────────────────
-
+/* -------------------------------------------------------------------------- */
+/* 2. Daily MAE (magnitude, bars) and bias (signed, markers + line).           */
+/* -------------------------------------------------------------------------- */
 export function DailyMAEChart({ data, loading }) {
-  if (loading) return <LoadingSkeleton height={260} label="Loading daily accuracy..." />;
-  if (!data?.length) return null;
+  if (loading) return <Loading h={280} text="Loading daily accuracy…" />;
+  if (!data?.length) return <Empty h={280} />;
 
-  const chartData = data.map((d) => ({
-    date: format(parseISO(d.delivery_date + "T00:00:00Z"), "Jan d"),
-    mae: d.daily_mae,
-    bias: d.daily_bias,
-  }));
+  const rows = data.map((d) => ({ date: d.delivery_date, mae: d.daily_mae, bias: d.daily_bias }));
 
   return (
-    <ResponsiveContainer width="100%" height={260}>
-      <ComposedChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="rgba(71,85,105,0.3)" />
-        <XAxis dataKey="date" tick={{ fill: "#64748b", fontSize: 11 }} tickLine={false} interval={2} />
-        <YAxis tick={{ fill: "#64748b", fontSize: 11 }} tickLine={false} unit=" MW" width={70} />
-        <Tooltip
-          content={({ active, payload, label }) => {
-            if (!active || !payload?.length) return null;
-            return (
-              <div style={{ background: "rgba(15,23,42,0.95)", border: "1px solid rgba(71,85,105,0.5)", borderRadius: 10, padding: "10px 14px", fontSize: 12 }}>
-                <p style={{ margin: "0 0 6px", color: "#94a3b8", fontWeight: 600 }}>{label}</p>
-                {payload.map((p) => (
-                  <div key={p.dataKey} style={{ color: p.color, marginBottom: 2 }}>
-                    {p.name}: <strong>{p.value?.toFixed(0)} MW</strong>
-                  </div>
-                ))}
-              </div>
-            );
-          }}
-        />
-        <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} formatter={(v) => <span style={{ color: "#94a3b8" }}>{v}</span>} />
-        <Bar dataKey="mae" name="Daily MAE" fill={COLORS.forecast} fillOpacity={0.8} radius={[4, 4, 0, 0]} />
-        <Line type="monotone" dataKey="bias" name="Bias" stroke={COLORS.bias} strokeWidth={2} dot={false} />
-        <ReferenceLine y={0} stroke="rgba(255,255,255,0.2)" />
-      </ComposedChart>
-    </ResponsiveContainer>
+    <ChartFrame label="Bar chart of daily mean absolute error with a line for daily bias, in megawatts">
+      <ResponsiveContainer width="100%" height={280}>
+        <ComposedChart data={rows} margin={MARGIN}>
+          <CartesianGrid {...grid} />
+          <XAxis dataKey="date" {...axisBase} interval={2} tickFormatter={formatDayTick} />
+          <YAxis {...mwAxis()} />
+          {zeroLine}
+          <Tooltip
+            content={<SeriesTip titleFmt={formatDayTick} fmt={(v, p) => (p.dataKey === "bias" ? `${signed(v)} MW` : `${num(v)} MW`)} />}
+            cursor={{ fill: "rgba(148,163,184,0.08)" }}
+          />
+          <Legend {...legendProps} />
+          <Bar dataKey="mae" name="MAE" fill={C.forecast} fillOpacity={0.85} radius={[3, 3, 0, 0]} maxBarSize={22} isAnimationActive={false} />
+          <Line
+            type="linear"
+            dataKey="bias"
+            name="Bias (+ over-forecast)"
+            stroke={C.bias}
+            strokeWidth={1.75}
+            dot={{ r: 2.5, fill: C.bias, strokeWidth: 0 }}
+            activeDot={{ r: 4 }}
+            isAnimationActive={false}
+          />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </ChartFrame>
   );
 }
 
-// ── 3. Hourly bias heatmap-style bar chart ──────────────────────────────────────
-
+/* -------------------------------------------------------------------------- */
+/* 3. Hour-of-day profile: MAE bars + bias line (same units, same axis).       */
+/* -------------------------------------------------------------------------- */
 export function HourlyErrorChart({ data, loading }) {
-  if (loading) return <LoadingSkeleton height={240} label="Loading hourly profile..." />;
-  if (!data?.length) return null;
+  if (loading) return <Loading h={260} text="Loading hourly profile…" />;
+  if (!data?.length) return <Empty h={260} />;
 
-  const chartData = data.map((d) => ({
-    hour: `${String(d.hour).padStart(2, "0")}:00`,
-    mae: d.hourly_mae,
-    bias: d.hourly_bias,
-  }));
+  const rows = data.map((d) => ({ hour: `${String(d.hour).padStart(2, "0")}:00`, mae: d.hourly_mae, bias: d.hourly_bias }));
 
   return (
-    <ResponsiveContainer width="100%" height={240}>
-      <ComposedChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="rgba(71,85,105,0.3)" />
-        <XAxis dataKey="hour" tick={{ fill: "#64748b", fontSize: 10 }} tickLine={false} interval={2} />
-        <YAxis tick={{ fill: "#64748b", fontSize: 11 }} tickLine={false} unit=" MW" width={70} />
-        <Tooltip
-          content={({ active, payload, label }) => {
-            if (!active || !payload?.length) return null;
-            return (
-              <div style={{ background: "rgba(15,23,42,0.95)", border: "1px solid rgba(71,85,105,0.5)", borderRadius: 10, padding: "10px 14px", fontSize: 12 }}>
-                <p style={{ margin: "0 0 6px", color: "#94a3b8", fontWeight: 600 }}>Hour {label}</p>
-                {payload.map((p) => (
-                  <div key={p.dataKey} style={{ color: p.color, marginBottom: 2 }}>
-                    {p.name}: <strong>{p.value?.toFixed(0)} MW</strong>
-                  </div>
-                ))}
-              </div>
-            );
-          }}
-        />
-        <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} formatter={(v) => <span style={{ color: "#94a3b8" }}>{v}</span>} />
-        <Bar dataKey="mae" name="Hourly MAE" fill={COLORS.actual} fillOpacity={0.75} radius={[3, 3, 0, 0]} />
-        <Line type="monotone" dataKey="bias" name="Bias" stroke={COLORS.error} strokeWidth={2} dot={false} />
-        <ReferenceLine y={0} stroke="rgba(255,255,255,0.2)" />
-      </ComposedChart>
-    </ResponsiveContainer>
+    <ChartFrame label="Bar chart of mean absolute error by hour of day with a bias line, in megawatts">
+      <ResponsiveContainer width="100%" height={260}>
+        <ComposedChart data={rows} margin={MARGIN}>
+          <CartesianGrid {...grid} />
+          <XAxis dataKey="hour" {...axisBase} interval={1} tick={{ fill: "var(--chart-axis)", fontSize: 10 }} />
+          <YAxis {...mwAxis()} />
+          {zeroLine}
+          <Tooltip
+            content={<SeriesTip titleFmt={(l) => `${l} UTC`} fmt={(v, p) => (p.dataKey === "bias" ? `${signed(v)} MW` : `${num(v)} MW`)} />}
+            cursor={{ fill: "rgba(148,163,184,0.08)" }}
+          />
+          <Legend {...legendProps} />
+          <Bar dataKey="mae" name="MAE" fill={C.actual} fillOpacity={0.8} radius={[3, 3, 0, 0]} maxBarSize={22} isAnimationActive={false} />
+          <Line
+            type="linear"
+            dataKey="bias"
+            name="Bias (+ over-forecast)"
+            stroke={C.bias}
+            strokeWidth={1.75}
+            dot={{ r: 2.5, fill: C.bias, strokeWidth: 0 }}
+            activeDot={{ r: 4 }}
+            isAnimationActive={false}
+          />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </ChartFrame>
   );
 }
 
-// ── 4. Scatter: Forecast vs Actual ─────────────────────────────────────────────
+/* -------------------------------------------------------------------------- */
+/* 4. Error distribution: a real histogram.                                    */
+/*    Bins are [lo, lo+width). Bins below 0 are under-forecast, bins from 0    */
+/*    upward are over-forecast, so no bin is ever "neutral".                   */
+/* -------------------------------------------------------------------------- */
+const BIN = 250;
 
-export function ScatterChart({ data, loading }) {
-  if (loading) return <LoadingSkeleton height={280} label="Loading scatter plot..." />;
-  if (!data?.length) return null;
-
-  const scatterData = data.map((d) => ({
-    actual: Math.round(d.actual_mw),
-    forecast: Math.round(d.forecast_mw),
-  }));
-
-  const maxVal = Math.max(...scatterData.map((d) => Math.max(d.actual, d.forecast))) * 1.05;
-
-  return (
-    <ResponsiveContainer width="100%" height={280}>
-      <ComposedChart margin={{ top: 20, right: 20, left: 0, bottom: 20 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="rgba(71,85,105,0.3)" />
-        <XAxis
-          type="number"
-          dataKey="actual"
-          name="Actual"
-          domain={[0, maxVal]}
-          tick={{ fill: "#64748b", fontSize: 11 }}
-          label={{ value: "Actual (MW)", position: "insideBottom", offset: -10, fill: "#64748b", fontSize: 11 }}
-        />
-        <YAxis
-          type="number"
-          dataKey="forecast"
-          name="Forecast"
-          domain={[0, maxVal]}
-          tick={{ fill: "#64748b", fontSize: 11 }}
-          label={{ value: "Forecast (MW)", angle: -90, position: "insideLeft", fill: "#64748b", fontSize: 11 }}
-          width={75}
-        />
-        <Tooltip
-          cursor={{ strokeDasharray: "3 3" }}
-          content={({ active, payload }) => {
-            if (!active || !payload?.length) return null;
-            const d = payload[0]?.payload;
-            return (
-              <div style={{ background: "rgba(15,23,42,0.95)", border: "1px solid rgba(71,85,105,0.5)", borderRadius: 10, padding: "10px 14px", fontSize: 12 }}>
-                <div style={{ color: COLORS.actual }}>Actual: <strong>{d?.actual} MW</strong></div>
-                <div style={{ color: COLORS.forecast }}>Forecast: <strong>{d?.forecast} MW</strong></div>
-                <div style={{ color: "#64748b", fontSize: 11 }}>Error: {((d?.forecast - d?.actual) || 0).toFixed(0)} MW</div>
-              </div>
-            );
-          }}
-        />
-        {/* Perfect forecast line */}
-        <Line
-          data={[{ actual: 0, forecast: 0 }, { actual: maxVal, forecast: maxVal }]}
-          type="linear"
-          dataKey="forecast"
-          stroke="rgba(255,255,255,0.2)"
-          strokeDasharray="6 3"
-          dot={false}
-          legendType="none"
-        />
-        <Scatter data={scatterData} fill={COLORS.teal} fillOpacity={0.6} name="Intervals" />
-      </ComposedChart>
-    </ResponsiveContainer>
-  );
+function buildBins(errors) {
+  const lo = Math.floor(Math.min(...errors) / BIN) * BIN;
+  const hi = Math.floor(Math.max(...errors) / BIN) * BIN;
+  const bins = [];
+  for (let start = lo; start <= hi; start += BIN) bins.push({ start, end: start + BIN, count: 0 });
+  errors.forEach((e) => {
+    bins[Math.floor((e - lo) / BIN)].count += 1;
+  });
+  return bins.map((b) => ({ ...b, share: (b.count / errors.length) * 100 }));
 }
 
-// ── 5. Error distribution histogram ────────────────────────────────────────────
+function HistTip({ active, payload }) {
+  if (!active || !payload?.length) return null;
+  const b = payload[0].payload;
+  const side = b.start >= 0 ? "Over-forecast" : "Under-forecast";
+  return (
+    <TipShell
+      title={`${signed(b.start)} to ${signed(b.end)} MW`}
+      rows={[
+        { name: side, color: b.start >= 0 ? C.over : C.under, value: "" },
+        { name: "Intervals", color: "var(--text)", value: num(b.count) },
+        { name: "Share", color: "var(--text)", value: `${b.share.toFixed(1)}%` },
+      ]}
+    />
+  );
+}
 
 export function ErrorHistogram({ data, loading }) {
-  if (loading) return <LoadingSkeleton height={240} label="Loading error distribution..." />;
-  if (!data?.length) return null;
+  if (loading) return <Loading h={300} text="Loading error distribution…" />;
+  if (!data?.length) return <Empty h={300} />;
 
-  // Bucket errors into bins of 200 MW
-  const errors = data.map((d) => d.error_mw);
-  const binSize = 200;
-  const min = Math.floor(Math.min(...errors) / binSize) * binSize;
-  const max = Math.ceil(Math.max(...errors) / binSize) * binSize;
-
-  const bins = {};
-  for (let b = min; b <= max; b += binSize) {
-    bins[b] = 0;
-  }
-  errors.forEach((e) => {
-    const bin = Math.floor(e / binSize) * binSize;
-    bins[bin] = (bins[bin] || 0) + 1;
-  });
-
-  const chartData = Object.entries(bins).map(([bin, count]) => ({
-    bin: `${parseInt(bin) > 0 ? "+" : ""}${bin}`,
-    count,
-    rawBin: parseInt(bin),
-  }));
+  const bins = buildBins(data.map((d) => d.error_mw));
+  // Only label every 4th bin start (every 1,000 MW) so ticks stay readable.
+  const showTick = (v) => v % 1000 === 0;
 
   return (
-    <ResponsiveContainer width="100%" height={240}>
-      <ComposedChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="rgba(71,85,105,0.3)" />
-        <XAxis dataKey="bin" tick={{ fill: "#64748b", fontSize: 10 }} tickLine={false} />
-        <YAxis tick={{ fill: "#64748b", fontSize: 11 }} tickLine={false} label={{ value: "Count", angle: -90, position: "insideLeft", fill: "#64748b", fontSize: 11 }} width={55} />
-        <Tooltip
-          content={({ active, payload, label }) => {
-            if (!active || !payload?.length) return null;
-            return (
-              <div style={{ background: "rgba(15,23,42,0.95)", border: "1px solid rgba(71,85,105,0.5)", borderRadius: 10, padding: "10px 14px", fontSize: 12 }}>
-                <p style={{ margin: "0 0 4px", color: "#94a3b8" }}>Error bin: {label} MW</p>
-                <p style={{ margin: 0, color: COLORS.error }}>{payload[0]?.value} intervals</p>
-              </div>
-            );
-          }}
-        />
-        <Bar dataKey="count" name="Frequency" radius={[3, 3, 0, 0]}>
-          {chartData.map((entry, i) => (
-            <Cell
-              key={i}
-              fill={entry.rawBin < 0 ? "#0ea5e9" : entry.rawBin > 0 ? "#f43f5e" : "#14b8a6"}
-            />
-          ))}
-        </Bar>
-        <ReferenceLine x="0" stroke="rgba(255,255,255,0.3)" strokeDasharray="4 2" />
-      </ComposedChart>
-    </ResponsiveContainer>
+    <ChartFrame label="Histogram of forecast errors in megawatts; red bars are over-forecast, blue bars are under-forecast">
+      <ResponsiveContainer width="100%" height={300}>
+        <ComposedChart data={bins} margin={{ ...MARGIN, bottom: 18 }} barCategoryGap={0} barGap={0}>
+          <CartesianGrid {...grid} />
+          <XAxis
+            dataKey="start"
+            {...axisBase}
+            interval={0}
+            tickFormatter={(v) => (showTick(v) ? signed(v) : "")}
+            label={{ value: "Forecast − actual (MW)", position: "insideBottom", offset: -12, fill: "var(--chart-axis)", fontSize: 11 }}
+          />
+          <YAxis {...axisBase} width={48} tickFormatter={num} label={{ value: "Intervals", position: "insideTopLeft", fill: "var(--chart-axis)", fontSize: 11, dy: -8, dx: 12 }} />
+          <Tooltip content={<HistTip />} cursor={{ fill: "rgba(148,163,184,0.08)" }} />
+          <Bar dataKey="count" isAnimationActive={false} stroke="var(--surface)" strokeWidth={1}>
+            {bins.map((b) => (
+              <Cell key={b.start} fill={b.start >= 0 ? C.over : C.under} fillOpacity={0.9} />
+            ))}
+          </Bar>
+        </ComposedChart>
+      </ResponsiveContainer>
+    </ChartFrame>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* 5. Forecast vs actual scatter: square plot, identical axes, 45° diagonal.   */
+/* -------------------------------------------------------------------------- */
+function ScatterTip({ active, payload }) {
+  if (!active || !payload?.length) return null;
+  const p = payload[0].payload;
+  return (
+    <TipShell
+      rows={[
+        { name: "Actual", color: C.actual, value: `${num(p.actual)} MW` },
+        { name: "Forecast", color: C.forecast, value: `${num(p.forecast)} MW` },
+        { name: "Error", color: p.error > 0 ? C.over : C.under, value: `${signed(p.error)} MW` },
+      ]}
+    />
+  );
+}
+
+export function CalibrationChart({ data, loading }) {
+  if (loading) return <Loading h={320} text="Loading scatter plot…" />;
+  if (!data?.length) return <Empty h={320} />;
+
+  const points = data.map((d) => ({ actual: d.actual_mw, forecast: d.forecast_mw, error: d.error_mw }));
+  const max = Math.ceil(Math.max(...points.map((p) => Math.max(p.actual, p.forecast))) / 2000) * 2000;
+  const axis = { type: "number", domain: [0, max], tickCount: 5, tickFormatter: num, ...axisBase };
+
+  return (
+    <ChartFrame label="Scatter plot of forecast against actual wind generation; points above the diagonal were over-forecast">
+      <ResponsiveContainer width="100%" aspect={1} maxHeight={360}>
+        <ScatterChart margin={{ top: 8, right: 16, left: 4, bottom: 22 }}>
+          <CartesianGrid stroke="rgba(148,163,184,0.12)" />
+          <XAxis {...axis} dataKey="actual" name="Actual" label={{ value: "Actual (MW)", position: "insideBottom", offset: -14, fill: "var(--chart-axis)", fontSize: 11 }} />
+          <YAxis {...axis} dataKey="forecast" name="Forecast" width={56} label={{ value: "Forecast (MW)", angle: -90, position: "insideLeft", offset: 6, fill: "var(--chart-axis)", fontSize: 11 }} />
+          <ZAxis range={[14, 14]} />
+          <Tooltip content={<ScatterTip />} cursor={{ strokeDasharray: "3 3", stroke: "rgba(148,163,184,0.4)" }} />
+          <ReferenceLine
+            segment={[{ x: 0, y: 0 }, { x: max, y: max }]}
+            stroke="var(--chart-reference)"
+            strokeDasharray="6 4"
+            ifOverflow="visible"
+          />
+          <Scatter data={points} fill={C.actual} fillOpacity={0.4} isAnimationActive={false} />
+        </ScatterChart>
+      </ResponsiveContainer>
+    </ChartFrame>
   );
 }

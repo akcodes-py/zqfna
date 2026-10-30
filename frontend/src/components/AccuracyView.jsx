@@ -1,199 +1,250 @@
-import React from "react";
-import { AlertTriangle, TrendingUp, Info } from "lucide-react";
+import { useMemo } from "react";
+import { Activity, CalendarRange, Lightbulb, ShieldAlert, Target } from "lucide-react";
 import { useAccuracy, useAllMatched } from "../hooks/useWindData";
-import { DailyMAEChart, HourlyErrorChart, ErrorHistogram } from "./Charts";
-import { MetricCard, SectionHeader, LoadingSkeleton, ErrorBanner } from "./UI";
+import { DATA_MONTH, MONTHS_2026, formatDayShort, formatMonth } from "../lib/time";
+import { fmtMW, percentile } from "../lib/stats";
+import { CalibrationChart, DailyMAEChart, ErrorHistogram, HourlyErrorChart } from "./Charts";
+import { CutoffControl } from "./CutoffControl";
+import { cutoffFor } from "../lib/cutoff";
+import { Callout, SlowNotice, Card, ChartBoundary, EmptyState, ErrorBanner, LoadingSkeleton, MetricCard, PageHeader, SectionTitle, UnavailableState } from "./UI";
+import { LazySignalScene } from "./LazySignalScene";
 
-function InterpretationBox({ bias, mae, rmse }) {
-  if (!mae) return null;
-  const overUnder = bias > 0 ? "over-forecasts" : "under-forecasts";
-  const riskMsg =
-    bias < 0
-      ? "Under-forecasting wind means the team may not buy enough backup power — higher procurement risk."
-      : "Over-forecasting wind means more backup power than needed is purchased — extra cost but lower shortage risk.";
-
+// error = forecast − actual.  Positive ⇒ wind over-forecast ⇒ desk under-buys thermal ⇒ SHORTAGE risk.
+// Negative ⇒ wind under-forecast ⇒ desk over-buys thermal ⇒ EXCESS cost.
+function Insights({ agg, p90Shortfall, overShare }) {
+  if (!agg?.mae_mw) return null;
+  const over = agg.bias_mw > 0;
   return (
-    <div
-      style={{
-        background: "rgba(139,92,246,0.07)",
-        border: "1px solid rgba(139,92,246,0.25)",
-        borderRadius: 14,
-        padding: "20px 24px",
-        marginBottom: 28,
-      }}
-    >
-      <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-        <TrendingUp size={18} color="#8b5cf6" style={{ marginTop: 2, flexShrink: 0 }} />
-        <div>
-          <h3 style={{ margin: "0 0 8px", fontSize: 14, fontWeight: 700, color: "#e2e8f0" }}>
-            What these numbers mean for procurement
-          </h3>
-          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: "#94a3b8", lineHeight: 1.8 }}>
-            <li>
-              The forecasting system <strong style={{ color: "#e2e8f0" }}>{overUnder}</strong> wind generation
-              by <strong style={{ color: "#8b5cf6" }}>{Math.abs(bias)?.toFixed(0)} MW on average</strong> (bias).
-            </li>
-            <li>
-              The typical error (MAE) is <strong style={{ color: "#f59e0b" }}>{mae?.toFixed(0)} MW</strong> — your
-              procurement team should plan for this as a <em>minimum buffer</em> when buying from the day-ahead market.
-            </li>
-            <li>
-              RMSE ({rmse?.toFixed(0)} MW) is higher than MAE, indicating occasional large errors — tail risk matters.
-            </li>
-            <li>{riskMsg}</li>
-          </ul>
-        </div>
-      </div>
-    </div>
+    <Callout icon={Lightbulb} tone="violet" title="What this means for procurement">
+      <ul>
+        <li>
+          WINDFOR <strong>{over ? "over-forecast" : "under-forecast"}</strong> wind by{" "}
+          <strong>{fmtMW(Math.abs(agg.bias_mw))} MW</strong> on average
+          {overShare != null && <> and ran high in {overShare}% of intervals</>}.
+        </li>
+        <li>
+          {over
+            ? "Relying on the forecast alone would leave the desk short: it buys less thermal power than the grid needed."
+            : "Relying on the forecast alone would leave the desk long: it buys more thermal power than the grid needed."}
+        </li>
+        {p90Shortfall != null && p90Shortfall > 0 && (
+          <li>
+            In 9 of 10 intervals wind came in no more than <strong>{fmtMW(p90Shortfall)} MW</strong> below forecast.
+            That is a sensible starting size for a shortage hedge.
+          </li>
+        )}
+        <li>
+          RMSE ({fmtMW(agg.rmse_mw)} MW) is well above MAE ({fmtMW(agg.mae_mw)} MW), so a few large misses dominate the
+          risk. Size the buffer on tail errors, not the average.
+        </li>
+      </ul>
+    </Callout>
   );
 }
 
-export function AccuracyView() {
-  const { data: accuracyData, loading: accLoading, error: accError } = useAccuracy();
-  const { data: matchedData, loading: matchLoading, error: matchError } = useAllMatched();
+export function AccuracyView({ cutoff, onCutoffChange, month, onMonthChange }) {
+  const hasData = month === DATA_MONTH;
+  const acc = useAccuracy(cutoff, hasData);
+  const matched = useAllMatched(cutoff, hasData);
+  const cutoffInfo = cutoffFor(cutoff);
+  const agg = acc.data?.aggregate;
+  const daily = acc.data?.daily;
+  const hourly = acc.data?.hourly;
 
-  // useAccuracy fetches aggregate, daily, hourly in parallel and returns { aggregate, daily, hourly }
-  const agg = accuracyData?.aggregate;
-  const daily = accuracyData?.daily;
-  const hourly = accuracyData?.hourly;
+  const { overShare, p90Shortfall } = useMemo(() => {
+    const rows = matched.data;
+    if (!rows?.length) return {};
+    const errors = rows.map((r) => r.error_mw);
+    return {
+      overShare: Math.round((errors.filter((e) => e > 0).length / errors.length) * 100),
+      p90Shortfall: percentile(errors, 0.9),
+    };
+  }, [matched.data]);
+
+  const worstDays = useMemo(
+    () => [...(daily ?? [])].sort((a, b) => b.daily_mae - a.daily_mae).slice(0, 5),
+    [daily]
+  );
+
+  const metrics = [
+    { label: "MAE", value: fmtMW(agg?.mae_mw), unit: "MW", hint: "Typical absolute error", tone: "amber" },
+    { label: "RMSE", value: fmtMW(agg?.rmse_mw), unit: "MW", hint: "Weights large misses more", tone: "rose" },
+    {
+      label: "Bias",
+      value: agg ? `${agg.bias_mw > 0 ? "+" : ""}${fmtMW(agg.bias_mw)}` : "—",
+      unit: "MW",
+      hint: "+ over-forecast · − under-forecast",
+      tone: "violet",
+    },
+    { label: "MAPE", value: agg?.mape_pct?.toFixed(1), unit: "%", hint: "Error relative to actual", tone: "sky" },
+    {
+      label: "Coverage",
+      value: agg?.coverage_pct?.toFixed(1),
+      unit: "%",
+      hint: agg ? `${fmtMW(agg.n_matched)} of ${fmtMW(agg.n_actuals)} intervals` : undefined,
+      tone: "teal",
+    },
+  ];
 
   return (
-    <div style={{ maxWidth: 1200, margin: "0 auto", padding: "32px 24px" }}>
-      {/* Page header */}
-      <div style={{ marginBottom: 32 }}>
-        <h1 style={{ margin: 0, fontSize: 28, fontWeight: 800, color: "#f1f5f9" }}>
-          Forecast Accuracy Analysis
-        </h1>
-        <p style={{ margin: "8px 0 0", fontSize: 14, color: "#64748b", maxWidth: 640 }}>
-          Quantitative assessment of WINDFOR forecast accuracy across January 2026.
-          All metrics computed against the best pre-decision-cutoff forecast to avoid data leakage.
-        </p>
+    <div className="page page--accuracy">
+      <PageHeader
+        eyebrow={`Performance review · ${formatMonth(month)}`}
+        title="Forecast accuracy"
+        description="Measure forecast reliability using only the information available before the selected decision cutoff."
+      />
+
+      <div className="toolbar toolbar--dock">
+        <div className="field">
+          <label htmlFor="accuracy-month">Data month</label>
+          <div className="select-with-icon">
+            <CalendarRange size={15} aria-hidden="true" />
+            <select
+              id="accuracy-month"
+              className="select select--with-icon"
+              value={month}
+              onChange={(event) => onMonthChange(event.target.value)}
+            >
+              {MONTHS_2026.map((value) => (
+                <option key={value} value={value}>{formatMonth(value)}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <CutoffControl value={cutoff} onChange={onCutoffChange} />
       </div>
 
-      {(accError || matchError) && <ErrorBanner message={accError || matchError} />}
+      <section className="hero-panel accuracy-hero">
+        <LazySignalScene mode="accuracy" />
+        <div className="accuracy-hero__rings" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+          <Target size={28} />
+        </div>
+        <div className="hero-panel__content">
+          <span className="hero-panel__kicker">FORECAST RISK ENGINE</span>
+          <h2>Know the miss<br /><em>before it costs.</em></h2>
+          <p>Turn forecast error into a procurement signal. Every score below is calculated without hindsight.</p>
+          <div className="hero-panel__meta">
+            <span><i className="pulse-dot" /> LEAKAGE-FREE ANALYSIS</span>
+            <span>31 DAYS / 1,488 INTERVALS</span>
+            <span>ERROR = FORECAST − ACTUAL</span>
+          </div>
+        </div>
+        <div className="accuracy-hero__signal">
+          <div className="accuracy-hero__signal-head"><span>RISK POSTURE</span><strong>{agg ? (agg.bias_mw > 0 ? "SHORTAGE WATCH" : "EXCESS WATCH") : "CALIBRATING"}</strong></div>
+          <div className="risk-meter"><span style={{ width: `${agg ? Math.min(92, Math.max(18, Math.abs(agg.bias_mw) / 10)) : 42}%` }} /></div>
+          <div className="accuracy-hero__grid">
+            <div><span>MAE</span><strong>{agg ? `${fmtMW(agg.mae_mw)} MW` : "—"}</strong></div>
+            <div><span>BIAS</span><strong>{agg ? `${agg.bias_mw > 0 ? "+" : ""}${fmtMW(agg.bias_mw)} MW` : "—"}</strong></div>
+            <div><span>COVERAGE</span><strong>{agg ? `${agg.coverage_pct.toFixed(1)}%` : "—"}</strong></div>
+          </div>
+          <span className="accuracy-hero__signal-status"><Activity size={13} /> {hasData ? "SIGNAL QUALITY: VERIFIED" : "AWAITING DATASET"}</span>
+        </div>
+        <div className="accuracy-hero__badge"><ShieldAlert size={14} /> PROCUREMENT INTELLIGENCE</div>
+      </section>
 
-      {/* Aggregate metrics */}
-      <SectionHeader
-        title="January 2026 — Aggregate Metrics"
-        subtitle={`Computed over ${agg?.n_matched?.toLocaleString() ?? "..."} matched 30-min intervals`}
-      />
-      {accLoading ? (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 28 }}>
-          {[...Array(4)].map((_, i) => <LoadingSkeleton key={i} height={100} />)}
-        </div>
-      ) : (
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-            gap: 16,
-            marginBottom: 28,
+      {hasData && (acc.slow || matched.slow) && <SlowNotice />}
+      {hasData && (acc.error || matched.error) && (
+        <ErrorBanner
+          message={acc.error || matched.error}
+          onRetry={() => {
+            acc.retry();
+            matched.retry();
           }}
-        >
-          <MetricCard
-            label="MAE — Mean Absolute Error"
-            value={agg?.mae_mw?.toLocaleString() ?? "—"}
-            unit="MW"
-            subtitle="Average absolute forecast error. Minimum procurement buffer needed."
-            color="amber"
-          />
-          <MetricCard
-            label="RMSE — Root Mean Square Error"
-            value={agg?.rmse_mw?.toLocaleString() ?? "—"}
-            unit="MW"
-            subtitle="Penalises large errors. High vs MAE = occasional big surprises."
-            color="rose"
-          />
-          <MetricCard
-            label="Bias — Systematic Error"
-            value={`${agg?.bias_mw > 0 ? "+" : ""}${agg?.bias_mw?.toLocaleString() ?? "—"}`}
-            unit="MW"
-            subtitle="Positive = over-forecast wind. Negative = under-forecast (higher risk)."
-            color="violet"
-          />
-          <MetricCard
-            label="MAPE — % Error"
-            value={agg?.mape_pct?.toFixed(1) ?? "—"}
-            unit="%"
-            subtitle="Scale-free error rate. Useful for benchmarking."
-            color="sky"
-          />
-        </div>
+        />
       )}
 
-      {/* Interpretation */}
-      <InterpretationBox bias={agg?.bias_mw} mae={agg?.mae_mw} rmse={agg?.rmse_mw} />
+      {!hasData ? (
+        <Card className="unavailable-card accuracy-unavailable">
+          <UnavailableState month={formatMonth(month)} height={280} />
+        </Card>
+      ) : (
+      <>
+      <SectionTitle index="01" title="Signal quality" subtitle="All matched 30-minute intervals · error = forecast − actual" />
+      <div className="metrics metrics--5">
+        {metrics.map((m) => (
+          <MetricCard key={m.label} {...m} loading={acc.loading} />
+        ))}
+      </div>
 
-      {/* Daily MAE trend */}
-      <div
-        style={{
-          background: "rgba(15,23,42,0.7)",
-          border: "1px solid rgba(71,85,105,0.3)",
-          borderRadius: 16,
-          padding: "24px",
-          marginBottom: 24,
-        }}
+      <Insights agg={agg} p90Shortfall={p90Shortfall} overShare={overShare} />
+
+      <SectionTitle index="02" title="Error anatomy" subtitle="Find the shape, timing, and consequence of forecast misses." />
+      <Card
+        title="Daily MAE and bias"
+        subtitle="Bars show absolute error per day; the line shows signed bias (above zero = over-forecast)."
       >
-        <SectionHeader
-          title="Daily MAE & Bias Trend"
-          subtitle="Bars show daily mean absolute error. Line shows systematic daily bias."
-        />
-        <DailyMAEChart data={daily} loading={accLoading} />
+        <ChartBoundary>
+          <DailyMAEChart data={daily} loading={acc.loading} />
+        </ChartBoundary>
+      </Card>
+
+      <div className="grid-2 chart-grid">
+        <Card title="Forecast vs actual" subtitle="Each dot is one interval. Dots above the dashed line were over-forecast.">
+          <ChartBoundary>
+            <CalibrationChart data={matched.data} loading={matched.loading} />
+          </ChartBoundary>
+        </Card>
+        <Card
+          title="Error distribution"
+          subtitle="Red: over-forecast, shortage risk. Blue: under-forecast, excess cost."
+        >
+          <ChartBoundary>
+            <ErrorHistogram data={matched.data} loading={matched.loading} />
+          </ChartBoundary>
+        </Card>
       </div>
 
-      {/* Hourly profile + Error histogram */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 24 }}>
-        <div
-          style={{
-            background: "rgba(15,23,42,0.7)",
-            border: "1px solid rgba(71,85,105,0.3)",
-            borderRadius: 16,
-            padding: "24px",
-          }}
-        >
-          <SectionHeader
-            title="Error by Hour of Day"
-            subtitle="Reveals intra-day systematic biases in the forecast model."
-          />
-          <HourlyErrorChart data={hourly} loading={accLoading} />
-        </div>
-        <div
-          style={{
-            background: "rgba(15,23,42,0.7)",
-            border: "1px solid rgba(71,85,105,0.3)",
-            borderRadius: 16,
-            padding: "24px",
-          }}
-        >
-          <SectionHeader
-            title="Error Distribution"
-            subtitle="Frequency of forecast errors by magnitude. Blue = under-forecast, red = over-forecast."
-          />
-          <ErrorHistogram data={matchedData} loading={matchLoading} />
-        </div>
-      </div>
+      <Card className="chart-card" title="Error by hour of day" subtitle="Intra-day pattern in the error, useful for shaping the hedge by delivery hour (UTC).">
+        <ChartBoundary>
+          <HourlyErrorChart data={hourly} loading={acc.loading} />
+        </ChartBoundary>
+      </Card>
 
-      {/* Methodology note */}
-      <div
-        style={{
-          background: "rgba(15,23,42,0.5)",
-          border: "1px solid rgba(71,85,105,0.2)",
-          borderRadius: 12,
-          padding: "16px 20px",
-          display: "flex",
-          gap: 10,
-          alignItems: "flex-start",
-        }}
-      >
-        <Info size={15} color="#64748b" style={{ marginTop: 2, flexShrink: 0 }} />
-        <p style={{ margin: 0, fontSize: 12, color: "#64748b", lineHeight: 1.6 }}>
-          <strong style={{ color: "#94a3b8" }}>Methodology: </strong>
-          For each 30-min delivery interval in January 2026, we join the FUELHH actual WIND generation
-          with the latest WINDFOR forecast published <em>strictly before midnight at the start of that delivery day</em>.
-          Error = Forecast − Actual. Intervals with no valid pre-cutoff forecast are excluded from metrics.
-          Data source: Elexon BMRS API (public).
-        </p>
+      <SectionTitle index="03" title="Decision notes" subtitle="The practical takeaways behind the numbers." />
+      <div className="grid-2 decision-grid">
+        <Card title="Worst days" subtitle="Days where the day-ahead forecast missed by the most.">
+          {acc.loading ? (
+            <LoadingSkeleton height={160} />
+          ) : worstDays.length ? (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th scope="col">Date</th>
+                  <th scope="col" className="num">MAE</th>
+                  <th scope="col" className="num">Bias</th>
+                </tr>
+              </thead>
+              <tbody>
+                {worstDays.map((d) => (
+                  <tr key={d.delivery_date}>
+                    <th scope="row">{formatDayShort(d.delivery_date)}</th>
+                    <td className="num">{fmtMW(d.daily_mae)} MW</td>
+                    <td className={`num ${d.daily_bias > 0 ? "text-rose" : "text-sky"}`}>
+                      {d.daily_bias > 0 ? "+" : ""}
+                      {fmtMW(d.daily_bias)} MW
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <EmptyState height={140}>No daily data available</EmptyState>
+          )}
+        </Card>
+
+        <Card title="Methodology" subtitle="Why these numbers are leakage-free.">
+          <p className="prose">
+            Each 30-minute interval joins FUELHH actual wind output with the latest WINDFOR forecast published strictly
+            before {cutoffInfo.short.replace("on D-1", "on the day before delivery").replace("on D", "on the delivery day")}. Hourly forecasts are carried forward to the following half hour.
+            Error is forecast minus actual. Intervals with no valid pre-cutoff forecast are excluded.
+          </p>
+        </Card>
       </div>
+      </>
+      )}
     </div>
   );
 }

@@ -1,201 +1,175 @@
-import React, { useState, useMemo } from "react";
-import { format, parseISO, eachDayOfInterval } from "date-fns";
-import { CalendarDays, Clock, Info, ChevronDown } from "lucide-react";
+import { useMemo, useState } from "react";
+import { ChevronLeft, ChevronRight, Clock, Info, Wind } from "lucide-react";
 import { useMatchedData } from "../hooks/useWindData";
+import { DATA_MONTH, JANUARY_DAYS, MONTHS_2026, formatDayLong, formatDayShort, formatMonth, formatStamp, shiftDay } from "../lib/time";
+import { fmtMW } from "../lib/stats";
 import { ForecastChart } from "./Charts";
-import { MetricCard, SectionHeader, LoadingSkeleton, ErrorBanner, Tag } from "./UI";
+import { WindField } from "./WindField";
+import { LazySignalScene } from "./LazySignalScene";
+import { CutoffControl } from "./CutoffControl";
+import { cutoffFor } from "../lib/cutoff";
+import { Badge, Callout, SlowNotice, Card, ChartBoundary, ErrorBanner, MetricCard, PageHeader, SectionTitle, UnavailableState } from "./UI";
 
-// January 2026 delivery days
-const JAN_DATES = eachDayOfInterval({
-  start: new Date(2026, 0, 1),
-  end: new Date(2026, 0, 31),
-}).map((d) => format(d, "yyyy-MM-dd"));
-
-export function ForecastView() {
-  const [selectedDate, setSelectedDate] = useState("2026-01-15");
-  const { data, vintages, loading, error } = useMatchedData(selectedDate);
+export function ForecastView({ cutoff, onCutoffChange, month, onMonthChange }) {
+  const [date, setDate] = useState("2026-01-15");
+  const hasData = month === DATA_MONTH;
+  const { data, vintages, loading, error, slow, retry } = useMatchedData(date, cutoff, hasData);
+  const cutoffInfo = cutoffFor(cutoff);
 
   const summary = useMemo(() => {
-    if (!data?.length) return null;
+    if (!data.length) return null;
     const actuals = data.map((d) => d.actual_mw);
     const forecasts = data.map((d) => d.forecast_mw);
+    const sum = (xs) => xs.reduce((a, b) => a + b, 0);
     return {
-      peakActual: Math.round(Math.max(...actuals)),
-      avgActual: Math.round(actuals.reduce((a, b) => a + b, 0) / actuals.length),
-      peakForecast: Math.round(Math.max(...forecasts)),
-      avgError: Math.round(data.reduce((a, b) => a + Math.abs(b.error_mw), 0) / data.length),
-      decisionVintage: vintages?.decision_vintage,
-      decisionCutoff: vintages?.decision_cutoff,
+      peakActual: Math.max(...actuals),
+      avgActual: sum(actuals) / actuals.length,
+      peakForecast: Math.max(...forecasts),
+      mae: sum(data.map((d) => Math.abs(d.error_mw))) / data.length,
     };
-  }, [data, vintages]);
+  }, [data]);
+
+  const vintage = vintages?.decision_vintage;
+  const metrics = [
+    { label: "Peak actual", value: summary?.peakActual, hint: "Highest 30-min output", tone: "teal" },
+    { label: "Average actual", value: summary?.avgActual, hint: "Mean output over the day", tone: "sky" },
+    { label: "Peak forecast", value: summary?.peakForecast, hint: "Highest value in the decision vintage", tone: "amber" },
+    { label: "Day MAE", value: summary?.mae, hint: "Mean absolute forecast error", tone: "rose" },
+  ];
 
   return (
-    <div style={{ maxWidth: 1200, margin: "0 auto", padding: "32px 24px" }}>
-      {/* Page header */}
-      <div style={{ marginBottom: 32 }}>
-        <h1 style={{ margin: 0, fontSize: 28, fontWeight: 800, color: "#f1f5f9" }}>
-          Wind Generation Forecast
-        </h1>
-        <p style={{ margin: "8px 0 0", fontSize: 14, color: "#64748b", maxWidth: 600 }}>
-          View the latest available forecast for a given delivery day, using only data
-          published before the day-ahead market decision cutoff.
-        </p>
-      </div>
+    <div className="page page--forecast">
+      <PageHeader
+        eyebrow={`Decision support · ${formatMonth(month)}`}
+        title="Wind generation forecast"
+        description="The latest forecast the desk could see at decision time, compared with what the wind fleet actually generated."
+      />
 
-      {/* Controls */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 16,
-          marginBottom: 32,
-          flexWrap: "wrap",
-        }}
-      >
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <label
-            htmlFor="delivery-date-select"
-            style={{ fontSize: 11, color: "#64748b", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" }}
+      <section className="hero-panel">
+        <WindField />
+        <LazySignalScene mode="forecast" />
+        <span className="hero-panel__index">01 <i /> 02</span>
+        <span className="hero-panel__stamp">NATIONAL SYSTEM / GB-WIND / {month.replace("-", ".")}</span>
+        <div className="hero-panel__content">
+          <span className="hero-panel__kicker">NATIONAL WIND SIGNAL</span>
+          <h2>Read the air<br /><em>before the market moves.</em></h2>
+          <p>One decision-grade view of the forecast vintage, the actual output, and the risk between them.</p>
+          <div className="hero-panel__meta">
+            <span><i className="pulse-dot" /> {formatMonth(month).toUpperCase()} REPLAY</span>
+            <span>30-MIN SETTLEMENTS</span>
+            <span>UTC / GB</span>
+          </div>
+        </div>
+        <div className="hero-panel__orbit" aria-hidden="true">
+          <span className="orbit orbit--one" />
+          <span className="orbit orbit--two" />
+          <span className="orbit__core"><Wind size={22} /></span>
+        </div>
+        <div className="hero-panel__readout">
+          <span className="readout__label">DECISION WINDOW</span>
+          <strong>{cutoffInfo.short}</strong>
+          <span className="readout__line" />
+          <span className="readout__label">LATEST VINTAGE</span>
+          <strong>{vintage ? formatStamp(vintage) : "Awaiting signal"}</strong>
+          <span className="readout__status">PRE-CUTOFF VERIFIED</span>
+        </div>
+      </section>
+
+      <div className="toolbar toolbar--dock">
+        <div className="field">
+          <label htmlFor="data-month">Data month</label>
+          <select
+            id="data-month"
+            className="select"
+            value={month}
+            onChange={(event) => {
+              const nextMonth = event.target.value;
+              onMonthChange(nextMonth);
+              if (nextMonth === DATA_MONTH) setDate("2026-01-15");
+            }}
           >
-            Delivery Date
-          </label>
-          <div style={{ position: "relative" }}>
-            <CalendarDays
-              size={14}
-              style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "#64748b" }}
-            />
-            <select
-              id="delivery-date-select"
-              value={selectedDate}
-              onChange={(e) => setSelectedDate(e.target.value)}
-              style={{
-                background: "rgba(30,41,59,0.8)",
-                border: "1px solid rgba(71,85,105,0.5)",
-                borderRadius: 8,
-                color: "#e2e8f0",
-                fontSize: 13,
-                padding: "8px 32px 8px 30px",
-                cursor: "pointer",
-                outline: "none",
-                appearance: "none",
-                minWidth: 160,
-              }}
+            {MONTHS_2026.map((value) => (
+              <option key={value} value={value}>{formatMonth(value)}</option>
+            ))}
+          </select>
+        </div>
+        <div className="field">
+          <label htmlFor="delivery-date">Delivery date</label>
+          <div className="stepper">
+            <button
+              className="btn btn--icon"
+              aria-label="Previous day"
+              disabled={!hasData || date === JANUARY_DAYS[0]}
+              onClick={() => setDate(shiftDay(date, -1))}
             >
-              {JAN_DATES.map((d) => (
+              <ChevronLeft size={16} />
+            </button>
+            <select id="delivery-date" className="select" value={date} onChange={(e) => setDate(e.target.value)} disabled={!hasData}>
+              {JANUARY_DAYS.map((d) => (
                 <option key={d} value={d}>
-                  {format(parseISO(d + "T00:00:00Z"), "EEE, dd MMM yyyy")}
+                  {formatDayLong(d)}
                 </option>
               ))}
             </select>
-            <ChevronDown
-              size={14}
-              style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", color: "#64748b", pointerEvents: "none" }}
-            />
+            <button
+              className="btn btn--icon"
+              aria-label="Next day"
+              disabled={!hasData || date === JANUARY_DAYS.at(-1)}
+              onClick={() => setDate(shiftDay(date, 1))}
+            >
+              <ChevronRight size={16} />
+            </button>
           </div>
         </div>
 
-        {/* Decision vintage info */}
-        {summary?.decisionVintage && (
-          <div
-            style={{
-              background: "rgba(20,184,166,0.08)",
-              border: "1px solid rgba(20,184,166,0.25)",
-              borderRadius: 10,
-              padding: "10px 16px",
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              fontSize: 12,
-            }}
-          >
-            <Clock size={14} color="#14b8a6" />
-            <span style={{ color: "#94a3b8" }}>Forecast used for decision:</span>
-            <span style={{ color: "#14b8a6", fontWeight: 600 }}>
-              Published {format(parseISO(summary.decisionVintage), "dd MMM HH:mm")} UTC
+        <CutoffControl value={cutoff} onChange={onCutoffChange} />
+
+        {vintage && (
+          <div className="vintage" title={`Cutoff: ${cutoffInfo.short.replace("D-1", "the day before").replace("on D", `on ${formatDayShort(date)}`)}`}>
+            <Clock size={14} aria-hidden="true" />
+            <span>
+              Forecast published <strong>{formatStamp(vintage)} UTC</strong>
             </span>
-            <Tag label="Pre-cutoff" color="#14b8a6" />
+            <Badge tone="teal">Before cutoff</Badge>
           </div>
         )}
       </div>
 
-      {error && <ErrorBanner message={error} />}
+      {slow && <SlowNotice />}
+      {error && <ErrorBanner message={error} onRetry={retry} />}
 
-      {/* Summary metric cards */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-          gap: 16,
-          marginBottom: 32,
-        }}
-      >
-        <MetricCard
-          label="Peak Actual Generation"
-          value={summary?.peakActual?.toLocaleString() ?? "—"}
-          unit="MW"
-          subtitle="Highest 30-min wind output on this day"
-          color="teal"
-        />
-        <MetricCard
-          label="Average Actual Output"
-          value={summary?.avgActual?.toLocaleString() ?? "—"}
-          unit="MW"
-          subtitle="Mean wind generation across the day"
-          color="sky"
-        />
-        <MetricCard
-          label="Peak Forecast"
-          value={summary?.peakForecast?.toLocaleString() ?? "—"}
-          unit="MW"
-          subtitle="Highest forecast value from selected vintage"
-          color="amber"
-        />
-        <MetricCard
-          label="Day MAE"
-          value={summary?.avgError?.toLocaleString() ?? "—"}
-          unit="MW"
-          subtitle="Mean absolute error for this day"
-          color="rose"
-        />
+      {!hasData ? (
+        <Card className="unavailable-card">
+          <UnavailableState month={formatMonth(month)} height={220} />
+        </Card>
+      ) : (
+      <>
+      <SectionTitle index="01" title="Day-ahead signal" subtitle="The decision vintage translated into a clear operating picture." />
+      <div className="metrics metrics--4">
+        {metrics.map((m) => (
+          <MetricCard key={m.label} {...m} value={fmtMW(m.value)} unit="MW" loading={loading} />
+        ))}
       </div>
 
-      {/* Main chart */}
-      <div
-        style={{
-          background: "rgba(15,23,42,0.7)",
-          border: "1px solid rgba(71,85,105,0.3)",
-          borderRadius: 16,
-          padding: "24px",
-          marginBottom: 24,
-        }}
+      <Card
+        className="chart-card chart-card--hero"
+        title="Forecast vs actual"
+        subtitle={`${formatDayLong(date)} · 30-minute intervals · times in UTC`}
       >
-        <SectionHeader
-          title="Forecast vs Actual Wind Generation"
-          subtitle={`${selectedDate} — 30-minute intervals (UTC). Forecast = latest vintage published before midnight on ${format(parseISO(selectedDate + "T00:00:00Z"), "dd MMM")}.`}
-        />
-        <ForecastChart data={data} loading={loading} />
-      </div>
+        <ChartBoundary>
+          <ForecastChart data={data} loading={loading} />
+        </ChartBoundary>
+      </Card>
 
-      {/* Leakage explanation */}
-      <div
-        style={{
-          background: "rgba(14,165,233,0.06)",
-          border: "1px solid rgba(14,165,233,0.2)",
-          borderRadius: 12,
-          padding: "16px 20px",
-          display: "flex",
-          gap: 12,
-          alignItems: "flex-start",
-        }}
-      >
-        <Info size={16} color="#0ea5e9" style={{ marginTop: 2, flexShrink: 0 }} />
-        <div style={{ fontSize: 12, color: "#94a3b8", lineHeight: 1.6 }}>
-          <strong style={{ color: "#e2e8f0" }}>How forecast selection works: </strong>
-          For delivery day D, the decision cutoff is midnight UTC at the start of day D (end of D-1).
-          We select the <em>latest WINDFOR vintage published strictly before this cutoff</em> — ensuring no
-          future information is used in the comparison. This mirrors real day-ahead market practice.
-        </div>
-      </div>
+      <Callout icon={Info} title="How the forecast is chosen">
+        <p>
+          For delivery day D the cutoff is {cutoffInfo.short}. We use the latest WINDFOR vintage published strictly
+          before it, so nothing the desk couldn’t have known leaks into the comparison. Switch the cutoff above to see
+          how much later forecasts flatter the numbers.
+        </p>
+      </Callout>
+      </>
+      )}
     </div>
   );
 }
