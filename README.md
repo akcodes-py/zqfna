@@ -1,17 +1,44 @@
-# UK Wind Power Forecast Dashboard
+# WindScope
 
-A full-stack web application for a UK electricity utility's day-ahead procurement team to:
-1. **Understand the latest wind generation forecasts** available at decision time
-2. **Quantify forecast accuracy** to make informed procurement decisions
+WindScope is a full-stack decision-support dashboard for a UK electricity
+procurement team. It replays January 2026 Elexon BMRS wind data to answer two
+practical questions:
+
+1. What wind forecast was available before the procurement decision?
+2. How accurate was that forecast, and what risk did the error create?
+
+The application compares `FUELHH` half-hourly actual generation with `WINDFOR`
+forecast vintages, applies an explicit decision cutoff, and presents the
+resulting forecast error in procurement terms.
 
 > **AI Disclosure:** This application was built with AI assistance (Claude and Cursor). All data pipeline logic, anti-leakage rules, and accuracy metric definitions were carefully designed and reviewed by the developer.
 
 ---
 
-## Live Demo
+## Links
 
-- **Frontend (Vercel):** _[Add deployed URL here before submitting]_
-- **Backend API (Render/Railway):** _[Add deployed backend URL here]_
+- **Frontend (Vercel):** _Pending deployment — replace this line with the public URL_
+- **Backend API (Render):** _Pending deployment — replace this line with the public URL_
+- **API health check:** `<backend-url>/health`
+
+Replace the pending entries only after the deployments have been tested in an
+incognito window. The repository should never contain invented or unverified
+links.
+
+## Engineering highlights
+
+- **Leakage-free evaluation:** forecast selection uses the strict rule
+  `publish_time < cutoff`.
+- **Two decision policies:** gate closure at 11:00 UTC on D-1 and midnight on
+  delivery day D.
+- **Temporal alignment:** `pandas.merge_asof` aligns hourly WINDFOR forecasts
+  with half-hourly FUELHH settlement intervals.
+- **Procurement risk metrics:** MAE, RMSE, bias, MAPE, coverage, daily/hourly
+  error profiles, and P90 positive forecast misses for shortage-risk sizing.
+- **Resilient experience:** loading, slow-server, error, retry, unavailable
+  month, responsive, accessible, and light/dark theme states.
+- **Verified quality:** 26 backend tests plus frontend lint and production
+  build validation.
 
 ---
 
@@ -23,14 +50,15 @@ Grid/
 ├── README.md                   # This file
 │
 ├── backend/
-│   ├── main.py                 # FastAPI app — 7 REST endpoints
+│   ├── main.py                 # FastAPI app — 8 REST endpoints
 │   ├── elexon_client.py        # Async Elexon BMRS API client
 │   ├── data_processor.py       # Anti-leakage pipeline + accuracy metrics
 │   ├── cache.py                # In-memory TTL cache for historical data
 │   ├── requirements.txt        # Python dependencies
 │   ├── Dockerfile              # Python 3.11 slim container
 │   └── tests/
-│       └── test_data_processor.py  # 20 Pytest tests
+│       ├── test_data_processor.py  # Pipeline, matching, metric, cache tests
+│       └── test_api_validation.py  # API boundary validation tests
 │
 └── frontend/
     ├── src/
@@ -137,6 +165,20 @@ FUELHH accepts at most 7 days per request, so January 2026 is fetched in concurr
 | **MAPE** | Scale-free % error for stakeholder communication |
 | **Coverage** | % of 30-min intervals with a valid pre-cutoff forecast |
 
+### Procurement buffer guidance
+
+The Accuracy view separates a typical-error baseline from tail-risk guidance:
+
+- **MAE** is the average absolute error and is a useful baseline for a routine
+  hedge, not a guaranteed reserve requirement.
+- **P90 shortfall** is the 90th percentile of positive forecast errors
+  (`forecast - actual` when wind is lower than forecast). It is the more
+  conservative reference for shortage-risk sizing.
+
+Neither value is an automated trading instruction. A procurement team should
+combine the displayed error distribution with its risk appetite, imbalance
+costs, and other generation positions before placing a hedge.
+
 ---
 
 ## Deployment
@@ -147,6 +189,25 @@ FUELHH accepts at most 7 days per request, so January 2026 is fetched in concurr
 | Vercel (frontend) | root `frontend`, env `VITE_API_URL=https://<your-render-app>` (no trailing slash); `vercel.json` handles SPA routing |
 
 The backend warms its cache in the background at startup, so `/health` answers immediately. Free Render instances sleep when idle; the UI shows a notice while the first request wakes the server.
+
+### Deployment verification
+
+1. Connect the repository containing `render.yaml` to Render. If the GitHub
+   repository root is this project directory, keep **Root Directory** as
+   `backend`. If the repository contains this project inside a parent `Grid`
+   folder, use `Grid/backend` instead.
+2. Use the configuration in `render.yaml`, or set these values manually:
+   build command `pip install -r requirements.txt`, start command
+   `uvicorn main:app --host 0.0.0.0 --port $PORT`, and health check path
+   `/health`.
+3. Set `CORS_ORIGINS` on Render to the exact Vercel origin, without a trailing
+   slash.
+4. Deploy the frontend from the `frontend` root with `VITE_API_URL` set to the
+   Render origin, without a trailing slash.
+5. Verify `/health`, `/api/accuracy?cutoff_offset_hours=13`, and
+   `/api/matched?cutoff_offset_hours=13`.
+6. In the deployed UI, test both cutoff options, Forecast and Accuracy tabs,
+   light/dark mode, and a mobile viewport.
 
 ## Frontend Notes
 
@@ -166,13 +227,14 @@ pip install -r requirements.txt
 python -m pytest tests/ -v
 ```
 
-All 20 tests cover:
+The test suite covers:
 - Anti-leakage boundary conditions (exact cutoff exclusion)
 - Correct forecast matching across multiple delivery dates
 - MAE, RMSE, and Bias calculation on known synthetic data
 - Configurable cutoff (midnight vs gate closure)
 - Concurrent cold requests share a single Elexon fetch
 - Edge cases: empty datasets, missing forecasts
+- API cutoff and delivery-date validation
 
 ---
 
@@ -180,7 +242,7 @@ All 20 tests cover:
 
 | Component | Technology |
 |-----------|-----------|
-| Frontend | React 18 + Vite |
+| Frontend | React 19 + Vite |
 | Charts | Recharts |
 | Backend API | FastAPI + Uvicorn |
 | Data pipeline | Pandas + NumPy |
@@ -197,4 +259,3 @@ All data sourced from the [Elexon BMRS Insights API](https://bmrs.elexon.co.uk/a
 
 - **Actuals:** `FUELHH` dataset — `fuelType=WIND`, `settlementDate` per day
 - **Forecasts:** `WINDFOR` dataset — filtered by `publishDateTimeFrom`/`publishDateTimeTo`
-

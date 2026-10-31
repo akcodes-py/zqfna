@@ -42,6 +42,9 @@ def build_matched_dataset(
     D-1, roughly the day-ahead auction gate closure. Later forecasts are never
     used, so there is no leakage.
     """
+    if cutoff_offset_hours not in (0, 13):
+        raise ValueError("cutoff_offset_hours must be 0 or 13")
+
     a = _actuals_df(actuals)
     f = _forecasts_df(forecasts)
     if a.empty or f.empty:
@@ -86,6 +89,8 @@ def compute_accuracy_metrics(matched_df: pd.DataFrame) -> dict:
     mae = float(errors.abs().mean())
     rmse = float(np.sqrt((errors**2).mean()))
     bias = float(errors.mean())
+    positive_errors = errors[errors > 0]
+    p90_shortfall = float(np.percentile(positive_errors, 90)) if not positive_errors.empty else 0.0
 
     nonzero = actuals > 10  # avoid division artefacts near zero
     mape = float((errors[nonzero].abs() / actuals[nonzero]).mean() * 100) if nonzero.any() else None
@@ -96,6 +101,7 @@ def compute_accuracy_metrics(matched_df: pd.DataFrame) -> dict:
         "rmse_mw": round(rmse, 1),
         "bias_mw": round(bias, 1),
         "mape_pct": round(mape, 2) if mape is not None else None,
+        "p90_shortfall_mw": round(p90_shortfall, 1),
         "mae_interpretation": (
             f"On average the wind forecast was off by {mae:.0f} MW. "
             f"{'Over' if bias > 0 else 'Under'}-forecasting wind by {abs(bias):.0f} MW "

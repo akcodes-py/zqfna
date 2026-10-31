@@ -177,11 +177,20 @@ class TestMetrics:
         metrics = compute_accuracy_metrics(df)
         assert metrics["n_matched"] == 10
 
+    def test_p90_shortfall_uses_positive_errors_only(self):
+        df = self._make_matched_df([(1000, 1100), (1000, 1200), (1000, 700)])
+        metrics = compute_accuracy_metrics(df)
+        assert metrics["p90_shortfall_mw"] == pytest.approx(190.0)
+
 
 # ── Test: Edge cases ────────────────────────────────────────────────────────────
 
 
 class TestEdgeCases:
+    def test_invalid_cutoff_is_rejected(self):
+        with pytest.raises(ValueError, match="cutoff_offset_hours"):
+            build_matched_dataset([], [], cutoff_offset_hours=6)
+
     def test_empty_actuals(self):
         df = build_matched_dataset([], [make_forecast("2026-01-02T00:00:00Z", "2026-01-01T12:00:00Z", 1000)])
         assert df.empty

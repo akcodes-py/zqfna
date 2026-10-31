@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { Activity, CalendarRange, Lightbulb, ShieldAlert, Target } from "lucide-react";
 import { useAccuracy, useAllMatched } from "../hooks/useWindData";
 import { DATA_MONTH, MONTHS_2026, formatDayShort, formatMonth } from "../lib/time";
-import { fmtMW, percentile } from "../lib/stats";
+import { fmtMW } from "../lib/stats";
 import { CalibrationChart, DailyMAEChart, ErrorHistogram, HourlyErrorChart } from "./Charts";
 import { CutoffControl } from "./CutoffControl";
 import { cutoffFor } from "../lib/cutoff";
@@ -29,8 +29,8 @@ function Insights({ agg, p90Shortfall, overShare }) {
         </li>
         {p90Shortfall != null && p90Shortfall > 0 && (
           <li>
-            In 9 of 10 intervals wind came in no more than <strong>{fmtMW(p90Shortfall)} MW</strong> below forecast.
-            That is a sensible starting size for a shortage hedge.
+            Among intervals where wind was over-forecast, 90% of misses were no larger than{" "}
+            <strong>{fmtMW(p90Shortfall)} MW</strong>. That is a sensible starting size for a shortage hedge.
           </li>
         )}
         <li>
@@ -51,15 +51,15 @@ export function AccuracyView({ cutoff, onCutoffChange, month, onMonthChange }) {
   const daily = acc.data?.daily;
   const hourly = acc.data?.hourly;
 
-  const { overShare, p90Shortfall } = useMemo(() => {
+  const { overShare } = useMemo(() => {
     const rows = matched.data;
     if (!rows?.length) return {};
     const errors = rows.map((r) => r.error_mw);
     return {
       overShare: Math.round((errors.filter((e) => e > 0).length / errors.length) * 100),
-      p90Shortfall: percentile(errors, 0.9),
     };
   }, [matched.data]);
+  const p90Shortfall = agg?.p90_shortfall_mw;
 
   const worstDays = useMemo(
     () => [...(daily ?? [])].sort((a, b) => b.daily_mae - a.daily_mae).slice(0, 5),
@@ -128,7 +128,7 @@ export function AccuracyView({ cutoff, onCutoffChange, month, onMonthChange }) {
           <p>Turn forecast error into a procurement signal. Every score below is calculated without hindsight.</p>
           <div className="hero-panel__meta">
             <span><i className="pulse-dot" /> LEAKAGE-FREE ANALYSIS</span>
-            <span>31 DAYS / 1,488 INTERVALS</span>
+            <span>{agg ? `${Math.round(agg.n_actuals / 48)} DAYS / ${agg.n_actuals.toLocaleString("en-GB")} INTERVALS` : "JANUARY 2026 DATASET"}</span>
             <span>ERROR = FORECAST − ACTUAL</span>
           </div>
         </div>
@@ -212,19 +212,28 @@ export function AccuracyView({ cutoff, onCutoffChange, month, onMonthChange }) {
             <table className="table">
               <thead>
                 <tr>
-                  <th scope="col">Date</th>
-                  <th scope="col" className="num">MAE</th>
-                  <th scope="col" className="num">Bias</th>
+                  <th scope="col">Delivery date</th>
+                  <th scope="col" className="num">Average error <span>(MAE)</span></th>
+                  <th scope="col" className="num">Forecast bias <span>(signed)</span></th>
                 </tr>
               </thead>
               <tbody>
-                {worstDays.map((d) => (
-                  <tr key={d.delivery_date}>
-                    <th scope="row">{formatDayShort(d.delivery_date)}</th>
-                    <td className="num">{fmtMW(d.daily_mae)} MW</td>
-                    <td className={`num ${d.daily_bias > 0 ? "text-rose" : "text-sky"}`}>
-                      {d.daily_bias > 0 ? "+" : ""}
-                      {fmtMW(d.daily_bias)} MW
+                {worstDays.map((d, index) => (
+                  <tr
+                    key={d.delivery_date}
+                    className={index === 0 ? "table-row--top" : ""}
+                    style={{ "--miss-share": `${Math.max(18, (d.daily_mae / worstDays[0].daily_mae) * 100)}%` }}
+                  >
+                    <th scope="row">
+                      <span className="table-date">{formatDayShort(d.delivery_date)}</span>
+                    </th>
+                    <td className="num table-emphasis">
+                      <span>{fmtMW(d.daily_mae)} <small>MW</small></span>
+                      <span className="table-bar" aria-hidden="true"><i /></span>
+                    </td>
+                    <td className={`num table-bias ${d.daily_bias > 0 ? "text-rose" : "text-sky"}`}>
+                      <span>{d.daily_bias > 0 ? "+" : ""}{fmtMW(d.daily_bias)}</span>
+                      <small className="table-bias__status">{d.daily_bias > 0 ? "OVER" : "UNDER"}-FORECAST</small>
                     </td>
                   </tr>
                 ))}
@@ -235,12 +244,34 @@ export function AccuracyView({ cutoff, onCutoffChange, month, onMonthChange }) {
           )}
         </Card>
 
-        <Card title="Methodology" subtitle="Why these numbers are leakage-free.">
-          <p className="prose">
-            Each 30-minute interval joins FUELHH actual wind output with the latest WINDFOR forecast published strictly
-            before {cutoffInfo.short.replace("on D-1", "on the day before delivery").replace("on D", "on the delivery day")}. Hourly forecasts are carried forward to the following half hour.
-            Error is forecast minus actual. Intervals with no valid pre-cutoff forecast are excluded.
-          </p>
+        <Card className="methodology-card" title="Methodology" subtitle="Why these numbers are leakage-free.">
+          <div className="methodology-grid">
+            <div className="methodology-step">
+              <span className="methodology-step__number">01</span>
+              <div>
+                <strong>Match the sources</strong>
+                <p>FUELHH actual wind output is joined to the hourly WINDFOR forecast for each 30-minute interval.</p>
+              </div>
+            </div>
+            <div className="methodology-step">
+              <span className="methodology-step__number">02</span>
+              <div>
+                <strong>Enforce the decision cutoff</strong>
+                <p>Only the latest forecast published strictly before {cutoffInfo.short.replace("on D-1", "on the day before delivery").replace("on D", "on the delivery day")} is allowed.</p>
+              </div>
+            </div>
+            <div className="methodology-step">
+              <span className="methodology-step__number">03</span>
+              <div>
+                <strong>Measure the miss</strong>
+                <p>Hourly forecasts carry forward to the following half hour. Error is forecast minus actual; missing pre-cutoff forecasts are excluded.</p>
+              </div>
+            </div>
+          </div>
+          <div className="methodology-proof">
+            <ShieldAlert size={16} aria-hidden="true" />
+            <span>Strict pre-cutoff filtering prevents future information from entering the evaluation.</span>
+          </div>
         </Card>
       </div>
       </>

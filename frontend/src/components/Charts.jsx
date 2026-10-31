@@ -279,7 +279,12 @@ export function ErrorHistogram({ data, loading }) {
             tickFormatter={(v) => (showTick(v) ? signed(v) : "")}
             label={{ value: "Forecast − actual (MW)", position: "insideBottom", offset: -12, fill: "var(--chart-axis)", fontSize: 11 }}
           />
-          <YAxis {...axisBase} width={48} tickFormatter={num} label={{ value: "Intervals", position: "insideTopLeft", fill: "var(--chart-axis)", fontSize: 11, dy: -8, dx: 12 }} />
+          <YAxis
+            {...axisBase}
+            width={56}
+            tickFormatter={num}
+            label={{ value: "Intervals", angle: -90, position: "insideLeft", offset: 8, fill: "var(--chart-axis)", fontSize: 11 }}
+          />
           <Tooltip content={<HistTip />} cursor={{ fill: "rgba(148,163,184,0.08)" }} />
           <Bar dataKey="count" isAnimationActive={false} stroke="var(--surface)" strokeWidth={1}>
             {bins.map((b) => (

@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import os
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 
@@ -10,6 +9,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 import cache
+from config import ALLOWED_CUTOFF_OFFSETS, JAN_FROM, JAN_TO, WINDFOR_FROM, cors_origins
 import elexon_client as ec
 from data_processor import (
     build_matched_dataset,
@@ -20,11 +20,6 @@ from data_processor import (
 )
 
 logger = logging.getLogger(__name__)
-
-JAN_FROM = datetime(2026, 1, 1, tzinfo=timezone.utc)
-JAN_TO = datetime(2026, 1, 31, 23, 59, 59, tzinfo=timezone.utc)
-WINDFOR_FROM = datetime(2025, 12, 31, tzinfo=timezone.utc)
-
 
 _locks: dict[str, asyncio.Lock] = {}
 
@@ -51,13 +46,12 @@ async def _forecasts():
     return await _cached("forecasts", lambda: ec.fetch_forecasts(WINDFOR_FROM, JAN_TO))
 
 
-ALLOWED_OFFSETS = (0, 13)  # 00:00 UTC on D, or 11:00 UTC on D-1 (day-ahead gate closure)
 OffsetParam = Query(0, description="Hours before 00:00 UTC on the delivery day: 0 or 13")
 
 
 def _check_offset(offset: int) -> int:
-    if offset not in ALLOWED_OFFSETS:
-        raise HTTPException(400, f"cutoff_offset_hours must be one of {ALLOWED_OFFSETS}")
+    if offset not in ALLOWED_CUTOFF_OFFSETS:
+        raise HTTPException(400, f"cutoff_offset_hours must be one of {ALLOWED_CUTOFF_OFFSETS}")
     return offset
 
 
@@ -93,10 +87,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 # Comma-separated list in CORS_ORIGINS to lock this down; defaults to open (public read-only data).
-_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_origins,
+    allow_origins=cors_origins(),
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -118,8 +111,8 @@ async def _guard(fn, message: str, status: int = 502):
     try:
         return await fn()
     except Exception as e:
-        logger.error("%s: %s", message, e)
-        raise HTTPException(status, f"{message}: {e}")
+        logger.error("%s: %s", message, e, exc_info=True)
+        raise HTTPException(status, message)
 
 
 @app.get("/health")

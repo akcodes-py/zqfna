@@ -6,10 +6,10 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
+from config import ELEXON_BASE_URL as BASE, ELEXON_CHUNK_DAYS as CHUNK_DAYS
+
 logger = logging.getLogger(__name__)
 
-BASE = "https://data.elexon.co.uk/bmrs/api/v1"
-CHUNK_DAYS = 7  # FUELHH allows at most 7 days per request
 _client: httpx.AsyncClient | None = None
 
 

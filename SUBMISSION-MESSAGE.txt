@@ -1,0 +1,31 @@
+Subject: WindScope — completed full-stack challenge
+
+Hi Harisankar,
+
+Thank you for sharing the challenge. I have completed WindScope, a full-stack
+decision-support dashboard for a UK electricity procurement team.
+
+The application replays January 2026 Elexon BMRS wind data and compares
+FUELHH half-hourly actuals with WINDFOR forecast vintages. It includes:
+
+- Leakage-free forecast selection using publish_time < cutoff
+- Switchable gate-closure and midnight decision cutoffs
+- Forecast-versus-actual comparison at 30-minute settlement resolution
+- MAE, RMSE, bias, MAPE, coverage, daily/hourly analysis, and P90
+  shortage-risk sizing
+- FastAPI, React/Vite, pandas, Docker Compose, and an asynchronous Elexon
+  client
+- 26 backend tests covering cutoff boundaries, matching, metrics, cache
+  concurrency, P90 logic, and API validation
+
+Links:
+
+- Live application: [insert verified Vercel URL]
+- GitHub repository: [insert public repository URL]
+- Demo video: [insert unlisted YouTube or Loom URL]
+
+The README contains setup instructions, architecture notes, API endpoints,
+anti-leakage logic, testing instructions, and deployment guidance.
+
+Best,
+Atul Kumar
